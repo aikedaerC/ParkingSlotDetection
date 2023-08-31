@@ -1,170 +1,134 @@
-"""Train directional marking point detector."""
-import math
-import random
+import pprint
 import torch
-from torch.utils.data import DataLoader
-import config
-import data
-import util
-import os
-import numpy as np
-from model import DirectionalPointDetector
+import argparse
+from pathlib import Path
+from permissive_dict import PermissiveDict as Dict
+from rovver.utils import dist
+from rovver.datasets.builder import build_dataloader
+from rovver.models.builder import build_model
+from rovver.optimization import build_optimizer, build_scheduler
+from rovver.utils.config import cfg_from_file, merge_new_config, get_logger, set_random_seed
+from rovver.utils.train_utils import train_model, model_fn_decorator
+from tensorboardX import SummaryWriter
+
+def get_args():
+    argparser = argparse.ArgumentParser(description=__doc__)
+    argparser.add_argument( '-c', '--cfg',      metavar='C',           default="rovver/yamls/ps_gat.yaml",                  help='The Configuration file')
+    argparser.add_argument( '-s', '--seed',     default=100,           type=int,                                                    help='The random seed')
+    argparser.add_argument( '-m', '--ckpt',     type=str,              help='The model path, /psv/v0/cache/check_pretrained/checkpoint_epoch_200.pth')
+    argparser.add_argument( '--local_rank',     type=int,              default=0,                                                   help='local rank for distributed training')
+    argparser.add_argument( '--launcher',       type=str,              default='none',                                              help='launcher for distributed training')
+    argparser.add_argument('--eval_all',        action='store_true',   default=False,                                               help='whether to evaluate all checkpoints')
+    args = argparser.parse_args()
+    return args
+
+def get_config():
+    args = get_args()
+    config_file = args.cfg
+    random_seed = args.seed
+    
+    config = cfg_from_file(config_file)
+
+    config.eval_all = args.eval_all
+    config.local_rank = args.local_rank
+    config.ckpt = args.ckpt
+    config.launcher = args.launcher
+
+    config.random_seed = random_seed
+    config.tag = Path(config_file).stem # 文件名不包含路径和后缀
+    config.cache_dir = Path('cache') / config.tag / str(config.random_seed)
+    config.model_dir = config.cache_dir / 'models'
+    config.log_dir = config.cache_dir / 'logs'
+    config.output_dir = config.cache_dir / 'output'
+    
+    # create the experiments dirs
+    config.cache_dir.resolve().mkdir(parents=True, exist_ok=True) 
+    config.model_dir.resolve().mkdir(exist_ok=True)
+    config.log_dir.resolve().mkdir(exist_ok=True)
+    config.output_dir.resolve().mkdir(exist_ok=True)
+    
+    cfg = Dict()
+    merge_new_config(config=cfg, new_config=config)
+    return cfg
 
 
-def plot_prediction(logger, image, marking_points, prediction):
-    """Plot the ground truth and prediction of a random sample in a batch."""
-    rand_sample = random.randint(0, image.size(0)-1)
-    sampled_image = util.tensor2im(image[rand_sample])
-    logger.plot_marking_points(sampled_image, marking_points[rand_sample],
-                               win_name='gt_marking_points')
-    sampled_image = util.tensor2im(image[rand_sample])
-    pred_points = data.get_predicted_points(prediction[rand_sample], 0.01)
-    if pred_points:
-        logger.plot_marking_points(sampled_image,
-                                   list(list(zip(*pred_points))[1]),
-                                   win_name='pred_marking_points')
+def main():
+    cfg = get_config() 
+    logger = get_logger(cfg.log_dir, cfg.tag)
+    logger.info(pprint.pformat(cfg))
 
-
-def get_angle(angle):
-    angle = angle / np.pi * 180
-    mod = 360
-    angle = (angle + mod) % (mod)
-    if angle < 180:
-        angle = angle
+    if cfg.launcher == 'none':
+        dist_train = False
     else:
-        angle = angle - 360
-    return angle / 180 * np.pi
+        cfg.batch_size, cfg.local_rank = dist.init_dist_pytorch(
+            cfg.batch_size, cfg.local_rank, backend='nccl'
+        )
+        cfg.data.train.batch_size = cfg.batch_size
+        dist_train = True
+
+    set_random_seed(cfg['random_seed'])
+
+    
+    if dist_train:
+        total_gpus = dist.get_world_size()
+        logger.info('total_batch_size: %d' % (total_gpus * cfg.batch_size))
+
+    tb_log = SummaryWriter(log_dir=str(cfg.log_dir)) if cfg.local_rank == 0 else None
+
+    train_set, train_loader, train_sampler = build_dataloader(
+            cfg.data.train, dist=dist_train, training=True, logger=logger)
+
+    model = build_model(cfg.model)
+    if cfg.get('sync_bn', False):
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    model.cuda()
+    
+    optimizer = build_optimizer(model, cfg.optimization)
+
+    start_epoch = it = 0
+    last_epoch = -1
+    if cfg.ckpt is not None:
+        it, start_epoch = model.load_params_with_optimizer(cfg.ckpt, to_cpu=dist, optimizer=optimizer, logger=logger)
+        last_epoch = start_epoch + 1
+
+    model.train()
+    if dist_train:
+        model = torch.nn.parallel.DistributedDataParallel(
+                model, device_ids=[cfg.local_rank % torch.cuda.device_count()])
+    logger.info(model)
+
+    total_iters_each_epoch = len(train_loader) 
+    lr_scheduler, lr_warmup_scheduler = build_scheduler(
+        optimizer, total_iters_each_epoch=total_iters_each_epoch, total_epochs=cfg.epochs,
+        last_epoch=last_epoch, optim_cfg=cfg.optimization
+    )
+
+    # -----------------------start training---------------------------
+    logger.info('*'*20 + 'Start training' +'*'*20)
+    
+    train_model(
+        model,
+        optimizer,
+        train_loader,
+        model_func=model_fn_decorator(),
+        lr_scheduler=lr_scheduler,
+        optim_cfg=cfg.optimization,
+        start_epoch=start_epoch,
+        total_epochs=cfg.epochs,
+        start_iter=it,
+        rank=cfg.local_rank,
+        tb_log=tb_log,
+        ckpt_save_dir=cfg.model_dir,
+        train_sampler=train_sampler,
+        lr_warmup_scheduler=lr_warmup_scheduler,
+        ckpt_save_interval=cfg.ckpt_save_interval,
+        max_ckpt_save_num=cfg.max_ckpt_save_num,
+        merge_all_iters_to_one_epoch=False
+    )
+    logger.info('*'*20 + 'End training' +'*'*20)
+    
 
 
-def generate_objective(marking_points_batch, device):
-    """Get regression objective and gradient for directional point detector."""
-    batch_size = len(marking_points_batch)
-    objective = torch.zeros(batch_size, config.NUM_FEATURE_MAP_CHANNEL,
-                            config.FEATURE_MAP_SIZE, config.FEATURE_MAP_SIZE,
-                            device=device)
-    gradient = torch.zeros_like(objective)
-    gradient[:, 0].fill_(1.)
-    for batch_idx, marking_points in enumerate(marking_points_batch):
-        for marking_point in marking_points:
-            col = math.floor(marking_point.x * config.FEATURE_MAP_SIZE)
-            row = math.floor(marking_point.y * config.FEATURE_MAP_SIZE)
-            # Confidence Regression
-            objective[batch_idx, 0, row, col] = marking_point.shape
-            # Makring Point Shape Regression
-            objective[batch_idx, 1, row, col] = 1.
-            # Offset Regression
-            objective[batch_idx, 2, row, col] = marking_point.x*16 - col
-            objective[batch_idx, 3, row, col] = marking_point.y*16 - row
-            # Direction Regression
-            direction = marking_point.direction
-            objective[batch_idx, 4, row, col] = math.cos(direction)
-            objective[batch_idx, 5, row, col] = math.sin(direction)
-            # Third Point Offset Regression
-            # p0_x = 512 * marking_point.x - 0.5
-            # p0_y = 512 * marking_point.y - 0.5
-            # p2_x = p0_x - 100 * math.cos(marking_point.angle)
-            # p2_y = p0_y - 100 * math.sin(marking_point.angle)
-            # p2_x = (p2_x + 0.5) / 512
-            # p2_y = (p2_y + 0.5) / 512
-            # the above is from draw.py, I'am sure they are right to draw label
-            p2_x = marking_point.x - 100 / 512 * math.cos(marking_point.angle)
-            p2_y = marking_point.y - 100 / 512 * math.sin(marking_point.angle)
-            # print(f"px:{marking_point.x}==>{p2_x}, py:{marking_point.y}==>{p2_y}")
-            county = 10
-            while p2_y >= 1:
-                p2_y = marking_point.y - ((100 - county) / 512) * math.sin(marking_point.angle)
-                county += 10
-            
-            countx = 10
-            while p2_x >= 1:
-                p2_x = marking_point.x - ((100 - countx) / 512) * math.sin(marking_point.angle)
-                countx += 10
-                
-            col_third = math.floor(p2_x * config.FEATURE_MAP_SIZE)
-            row_third = math.floor(p2_y * config.FEATURE_MAP_SIZE)
-            objective[batch_idx, 6, row_third, col_third] = p2_x * 16 - col_third
-            objective[batch_idx, 7, row_third, col_third] = p2_y * 16 - row_third
-            # third point confidence
-            objective[batch_idx, 8, row_third, col_third] = 1.
 
-            # Assign Gradient
-            gradient[batch_idx, 1:6, row, col].fill_(1.)
-            gradient[batch_idx, 6:9, row_third, col_third].fill_(1.)
-    return objective, gradient
-
-
-def train_detector(args):
-    """Train directional point detector."""
-    args.cuda = not args.disable_cuda and torch.cuda.is_available()
-    device = torch.device('cuda:' + str(args.gpu_id) if args.cuda else 'cpu')
-    torch.set_grad_enabled(True)
-
-    dp_detector = DirectionalPointDetector(
-        3, args.depth_factor, config.NUM_FEATURE_MAP_CHANNEL).to(device)
-    if args.detector_weights:
-        print("Loading weights: %s" % args.detector_weights)
-        dp_detector.load_state_dict(torch.load(args.detector_weights))
-    dp_detector.train()
-
-    optimizer = torch.optim.Adam(dp_detector.parameters(), lr=args.lr)
-    if args.optimizer_weights:
-        print("Loading weights: %s" % args.optimizer_weights)
-        optimizer.load_state_dict(torch.load(args.optimizer_weights))
-
-    logger = util.Logger(args.enable_visdom, ['train_loss'])
-    data_loader = DataLoader(data.ParkingSlotDataset(args.dataset_directory),
-                             batch_size=args.batch_size, shuffle=True,
-                             num_workers=args.data_loading_workers,
-                             collate_fn=lambda x: list(zip(*x)))
-    import matplotlib.pyplot as plt
-    for epoch_idx in range(args.num_epochs):
-        for iter_idx, (images, marking_points) in enumerate(data_loader):
-            images = torch.stack(images).to(device)
-            # tmp = images.cpu().numpy()[0]
-            # color_image_data = np.transpose(tmp, (1, 2, 0))
-            # plt.imshow(color_image_data)
-
-            optimizer.zero_grad()
-            prediction = dp_detector(images)
-            objective, gradient = generate_objective(marking_points, device)
-
-            # b, channel, w, h = objective.shape
-            # objective = objective.cpu().numpy()[0]
-            # objective = objective * 512 - 0.5
-            # plt.figure(figsize=(10, 5))
-            # for ch in range(channel):
-            #     plt.subplot(1, channel, ch + 1)
-            #     plt.imshow(objective[ch])  # Use 'gray' for single channel, 'viridis' for multiple channels
-            #     plt.title(f'Channel {ch}')
-            #     plt.grid()
-            #     plt.axis('off')
-
-            # plt.tight_layout()
-            # plt.show()
-            # exit()
-            loss_shape = (prediction[:, 0:1] - objective[:, 0:1])** 2
-            loss_point = (prediction[:, 1:4] - objective[:, 1:4])** 2
-            loss_direction = (prediction[:, 4:6] - objective[:, 4:6])** 2 #1- torch.cosine_similarity(prediction[:,4:5], objective[:,4:5]).unsqueeze(1)
-            loss_third_point = (prediction[:, 6:9] - objective[:, 6:9])** 2
-            
-            loss = torch.cat((loss_shape, loss_point, loss_direction, loss_third_point), dim=1)
-            loss.backward(gradient)
-            optimizer.step()
-            # for viual
-            loss_shape = torch.sum(loss_shape * gradient[:,0:1]) / loss_shape.size(0)
-            loss_point = torch.sum(loss_point * gradient[:,1:4]) / loss_point.size(0)
-            loss_direction = torch.sum(loss_direction * gradient[:,4:6]) / loss_direction.size(0)
-            loss_third_point = torch.sum(loss_third_point * gradient[:,6:9]) / loss_third_point.size(0)
-            train_loss = loss_shape + loss_point + loss_direction + loss_third_point
-            
-            logger.log(epoch=epoch_idx, iter=iter_idx, train_loss=train_loss.item())
-            if args.enable_visdom:
-                plot_prediction(logger, images, marking_points, prediction)
-        os.makedirs("weights", exist_ok=True)
-        torch.save(dp_detector.state_dict(),
-                   'weights/dp_detector_%d.pth' % epoch_idx)
-        torch.save(optimizer.state_dict(), 'weights/optimizer.pth')
-
-
-if __name__ == '__main__':
-    train_detector(config.get_parser_for_training().parse_args())
+if __name__ == "__main__":
+    main()
