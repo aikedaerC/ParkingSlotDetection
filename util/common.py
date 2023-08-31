@@ -120,55 +120,6 @@ def getJson(root_path, json_root_path):
             json.dump(slot_json, json_file, indent=4)  # indent for pretty formatting
 
 def JsonAddAbsoluteAngle(jsonpath, new_jsonpath):
-    """
-    origin:
-    {
-    "marks": [
-        [
-            204.7009311443272,
-            464.21673609409453,
-            5.2581298841538455,
-            479.1354835447016
-        ],
-        [
-            192.17654986522894,
-            296.78326390590536,
-            -7.266251394944419,
-            311.7020113565124
-        ],
-        [
-            177.98198970840465,
-            131.39634893408473,
-            -21.285438257823984,
-            148.49875086258203
-        ],
-        [
-            170.97782406272958,
-            54.89745160499872,
-            170.97782406272958,
-            54.89745160499872
-        ]
-    ],
-    "slots": [
-        [
-            1,
-            2,
-            1,
-            90,
-            -0.07466308710315031
-        ],
-        [
-            2,
-            3,
-            1,
-            90,
-            -0.08561656903112855
-        ]
-    ]
-}
-    target:
-
-    """
     os.makedirs(new_jsonpath, exist_ok=True)
     json_list = os.listdir(jsonpath)
     for jsonfile in tqdm(json_list, desc="JsonAddAbsoluteAngle"):
@@ -188,17 +139,16 @@ def JsonAddAbsoluteAngle(jsonpath, new_jsonpath):
             if len(slot) == 0:
                 print(f"slot is empty:{jsonfile}")
                 break
-            p1_idx, p2_idx, type_num, degree = int(slot[0]-1), int(slot[1]-1), slot[2], slot[3]
+            p1_idx, p2_idx, type_num, degree = slot[0]-1, slot[1]-1, slot[2], slot[3]
             p1, p2 = marks[p1_idx][0:2], marks[p2_idx][0:2]
-            p3, p4, angle_absolute = getP34(p1, p2, type_num, degree)
-
+            p3, p4, angle_absolute = getP34(p1,p2,type_num,degree)
             if len(json_data['marks'][p1_idx])==5:
                 json_data['marks'][p1_idx].append(angle_absolute)
             if len(json_data['marks'][p2_idx])==5:
                 json_data['marks'][p2_idx].append(angle_absolute)
         flag = True
         for mk in json_data['marks']:
-            while len(mk)<=5:
+            if len(mk)<=5:
                 mk.append(3.14) # for the convient of dim aligenment
             if len(mk)!=6:
                 flag = False
@@ -209,9 +159,7 @@ def JsonAddAbsoluteAngle(jsonpath, new_jsonpath):
             json.dump(json_data, json_file, indent=4)  # indent for pretty formatting
 
 def mat2Json4PointsWithAbsoluteAngle(matpath, jsonpath):
-    os.makedirs(jsonpath, exist_ok=True)
     mat_list = os.listdir(matpath)
-    slot_empty = []
     for mat in tqdm(mat_list, desc="mat2Json4PointsWithAbsoluteAngle"):
         if mat.endswith(".mat"):
             matfile = os.path.join(matpath, mat)
@@ -221,9 +169,6 @@ def mat2Json4PointsWithAbsoluteAngle(matpath, jsonpath):
         mat_data = sio.loadmat(matfile)
         marks = mat_data['marks']
         slots = mat_data['slots']
-        if len(slots) == 0:
-            slot_empty.append(matfile)
-            continue
         slot_json = {}
         slot_json["marks"] = marks.tolist()
         slot_json["slots"] = slots.tolist()
@@ -236,24 +181,18 @@ def mat2Json4PointsWithAbsoluteAngle(matpath, jsonpath):
             slot_json["slots"][idx].append(angle_absolute)
             # add another point of the separating line, if the point is not in slot, it will not get the other point, but for the convinent of indexing, just replate the same dim
             if len(slot_json["marks"][p1_idx]) == 2: # in case of sharing point
-                slot_json["marks"][p1_idx].extend(p4)  # 14
-                slot_json["marks"][p1_idx].extend([int(type_num)])
-                slot_json["marks"][p1_idx].extend([angle_absolute])
-                
+                slot_json["marks"][p1_idx].extend(p4) # 14
             if len(slot_json["marks"][p2_idx]) == 2: # in case of sharing point
-                slot_json["marks"][p2_idx].extend(p3)  # 23
-                slot_json["marks"][p2_idx].extend([int(type_num)])
-                slot_json["marks"][p2_idx].extend([angle_absolute])
-
-        for em in slot_json["marks"]:
-            if len(em) != 6:
-                slot_json["marks"].remove(em)
+                slot_json["marks"][p2_idx].extend(p3) # 23
+        for idx in range(len(slot_json["marks"])):
+            if len(slot_json["marks"][idx]) == 2:
+                temp = slot_json["marks"][idx]*2
+                slot_json["marks"][idx] = temp
                 
         json_file_path = os.path.join(jsonpath, mat.replace(".mat",".json"))
         with open(json_file_path, 'w') as json_file:
             json.dump(slot_json, json_file, indent=4)  # indent for pretty formatting
-    print(f"slot_empty has {len(slot_empty)}")
-    
+
 def check_json_files(directory_path, oudir):
     flag = 0
     alist = []
@@ -281,6 +220,6 @@ if __name__ == "__main__":
     # img_dir = '/workspace/ParkingSlotDetection/data_comp/withlabelimg/predictions'
     # img2video(img_dir)
 
-    mat2Json4PointsWithAbsoluteAngle(r'F:\ubunut_desktop_back\ParkingSlotDetection\data_extrap\all\mat', r'F:\ubunut_desktop_back\ParkingSlotDetection\data_extrap\all\jsonWithAngle')
+    # mat2Json4PointsWithAbsoluteAngle('/workspace/ParkingSlotDetection/data_extrap/all/mat', '/workspace/ParkingSlotDetection/data_extrap/all/json')
     
-    # JsonAddAbsoluteAngle(r'F:\ubunut_desktop_back\ParkingSlotDetection\data_extra\train\json',r'F:\ubunut_desktop_back\ParkingSlotDetection\data_extra\train\jsonWithAngle')
+    JsonAddAbsoluteAngle('/workspace/ParkingSlotDetection/data_extra/train/json','/workspace/ParkingSlotDetection/data_extra/train/jsonWithAngle')
