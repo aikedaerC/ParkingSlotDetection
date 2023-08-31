@@ -1,0 +1,1 @@
+numpy,numba,tensorboardX,easydict,pyyaml,permissive_dict,opencv-python,scipy,tqdm

@@ -1,96 +1,77 @@
-# DMPR-PS
 
-This is the implementation of [DMPR-PS](https://github.com/Teoge/DMPR-PS/blob/master/DMPR-PS.pdf) using PyTorch.
+# Attentional Graph Neural Network for Parking Slot Detection
+
+![image](https://github.com/Jiaolong/gcn-parking-slot/blob/main/images/animated.gif)
+
+Repository for the paper ["Attentional Graph Neural Network for Parking Slot Detection"](https://arxiv.org/abs/2104.02576).
+```
+@article{gcn-parking-slot:2020,
+  title={Attentional Graph Neural Network for Parking Slot Detection},
+  author={M. Chen, J. Xu, L. Xiao, D. Zhao etal},
+  journal={IEEE Robotics and Automation Letters (RA-L)},
+  year={2021},
+  volume={6},
+  number={2},
+  pages={3445-3450},
+  doi={10.1109/LRA.2021.3064270}
+}
+```
 
 ## Requirements
 
-* PyTorch
-* CUDA (optional)
-* Other requirements  
-    `pip install -r requirements.txt`
+- python 3.6
 
-## Pre-trained weights
+- pytorch 1.4+
 
-The [pre-trained weights](https://drive.google.com/open?id=1OuyF8bGttA11-CKJ4Mj3dYAl5q4NL5IT) could be used to reproduce the number in the paper.
+- other requirements: `pip install -r requirements.txt`
 
-## Inference
+## Pretrained models
 
-* Image inference
+Two pre-trained models can be downloaded with following links.
 
-    ```(shell)
-    python inference.py --mode image --detector_weights $DETECTOR_WEIGHTS --inference_slot
-    ```
-
-* Video inference
-
-    ```(shell)
-    python inference.py --mode video --detector_weights $DETECTOR_WEIGHTS --video $VIDEO --inference_slot
-    ```
-
-    Argument `DETECTOR_WEIGHTS` is the trained weights of detector.  
-    Argument `VIDEO` is path to the video.  
-    View `config.py` for more argument details.
+| Link      | Code | Description |
+| ----------- | ---- | ----------- |
+| [Model0](https://pan.baidu.com/s/137ZHZnsEfyaO4yaa5YoBIQ) | bc0a | Trained with ps2.0 subset as in [1]|
+| [Model1](https://pan.baidu.com/s/1qogTCwtjGEtR0y-PB4Ibmg)   | pgig  | Trained with full ps2.0 dataset      |
 
 ## Prepare data
 
-1. Download ps2.0 from [here](https://cslinzhang.github.io/deepps/), and extract.
-2. Download the [labels](https://drive.google.com/open?id=1o6yXxc3RjIs6r01LtwMS_zH91Tk9BFRB), and extract.  
-(In case you want to label your own data, you can use [`directional_point` branch of my labeling tool **MarkToolForParkingLotPoint**](https://github.com/Teoge/MarkToolForParkingLotPoint/tree/directional_point).)
-3. Perform data preparation and augmentation:
+The original ps2.0 data and label can be found [here](https://github.com/Teoge/DMPR-PS). Extract and organize as follows:
 
-    ```(shell)
-    python augment_dataset.py --dataset trainval 
-    python augment_dataset.py --dataset test 
-    ```
+```
+├── datasets
+│   └── parking_slot
+│       ├── annotations
+│       ├── ps_json_label 
+│       ├── testing
+│       └── training
+```
+## Train & Test
 
-    Argument `LABEL_DIRECTORY` is the directory containing json labels.  
-    Argument `IMAGE_DIRECTORY` is the directory containing jpg images.  
-    Argument `OUTPUT_DIRECTORY` is the directory where output images and labels are.  
-    View `augment_dataset.py` for more argument details.
+Export current directory to `PYTHONPATH`:
 
-## Train
-
-```(shell)
-python train.py --dataset_directory $TRAIN_DIRECTORY
+```bash
+export PYTHONPATH=`pwd`
 ```
 
-Argument `TRAIN_DIRECTORY` is the train directory generated in data preparation.  
-View `config.py` for more argument details (batch size, learning rate, etc).
+- demo
 
-## Evaluate
-
-* Evaluate directional marking-point detection
-
-    ```(shell)
-    python evaluate.py --dataset_directory $TEST_DIRECTORY --detector_weights $DETECTOR_WEIGHTS
-    ```
-
-    Argument `TEST_DIRECTORY` is the test directory generated in data preparation.  
-    Argument `DETECTOR_WEIGHTS` is the trained weights of detector.  
-    View `config.py` for more argument details (batch size, learning rate, etc).
-
-* Evaluate parking-slot detection
-
-    ```(shell)
-    python ps_evaluate.py --label_directory $LABEL_DIRECTORY --image_directory $IMAGE_DIRECTORY --detector_weights $DETECTOR_WEIGHTS
-    ```
-
-    Argument `LABEL_DIRECTORY` is the directory containing testing json labels.  
-    Argument `IMAGE_DIRECTORY` is the directory containing testing jpg images.  
-    Argument `DETECTOR_WEIGHTS` is the trained weights of detector.  
-    View `config.py` for more argument details.
-
-## Citing DMPR-PS
-
-If you find DMPR-PS useful in your research, please consider citing:
-
-```()
-@inproceedings{DMPR-PS,
-Author = {Junhao Huang and Lin Zhang and Ying Shen and Huijuan Zhang and Shengjie Zhao and Yukai Yang},
-Booktitle = {2019 IEEE International Conference on Multimedia and Expo (ICME)},
-Title = {{DMPR-PS}: A novel approach for parking-slot detection using directional marking-point regression},
-Month = {Jul.},
-Year = {2019},
-Pages = {212-217}
-}
 ```
+python3 tools/demo.py -c config/ps_gat.yaml -m cache/ps_gat/100/models/checkpoint_epoch_200.pth
+```
+
+- train
+
+```
+python3 tools/train.py -c config/ps_gat.yaml
+```
+
+- test
+
+```
+python3 tools/test.py -c config/ps_gat.yaml -m cache/ps_gat/100/models/checkpoint_epoch_200.pth
+```
+
+## References
+
+[1] J. Huang, L. Zhang, Y. Shen, H. Zhang, and Y. Yang, “DMPR-PS: A novel approach for parking-slot detection using directional marking-point regression,” in IEEE International Conference on Multimedia and Expo (ICME), 2019. [code](https://github.com/Teoge/DMPR-PS)
