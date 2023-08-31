@@ -1,1 +1,7 @@
-numpy,numba,tensorboardX,easydict,pyyaml,permissive_dict,opencv-python,scipy,tqdm
+torchvision
+opencv-python
+numpy
+Pillow
+visdom
+matplotlib
+thop
